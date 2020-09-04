@@ -38,9 +38,15 @@
 
 #define NUM_GPIOS               8
 #define NUM_ANALOG_PINS         6
+
+struct iio_gpio {
+    struct iio_channel *gpio;
+    char label[30];
+};
 static struct iio_context *ctx;
 static struct iio_channel *adc_ch;
 static struct iio_channel *dac_ch;
+static struct iio_gpio gpio_ch[NUM_GPIOS];
 static struct iio_widget iio_widgets[25];
 static unsigned int num_widgets;
 
@@ -78,6 +84,62 @@ static GtkTextBuffer *vshift_buf;
 
 static gboolean plugin_detached;
 static gint this_page;
+
+static gboolean cn0540_get_gpio_state(const char* gpio_name)
+{
+	long long readback = -1;
+
+	for(int idx = 0; idx < NUM_GPIOS; idx++){
+		if(strstr(gpio_ch[idx].label, gpio_name))
+		iio_channel_attr_read_longlong(gpio_ch[idx].gpio, "raw",
+					       &readback);
+	}
+
+	if(readback == -1)
+		printf("%s: wrong gpio name: %s\n",__func__, gpio_name);
+
+	return (gboolean)readback;
+}
+
+static void cn0540_set_gpio_state(const char* gpio_name, gboolean state)
+{
+	for(int idx = 0; idx < NUM_GPIOS; idx++){
+        if (strstr(gpio_ch[idx].label, gpio_name))
+            iio_channel_attr_write_longlong(gpio_ch[idx].gpio, "raw",
+                                            (long long)state);
+	}
+}
+
+static void monitor_shutdown(GtkCheckButton *btn)
+{
+	cn0540_set_gpio_state("cn0540_set_gpio_state",
+			      btn->toggle_button.active);
+	gtk_text_buffer_set_text(shutdown_buffer, btn->toggle_button.active ?
+				 "ENABLED" : "DISABLED", -1);
+}
+
+static void monitor_sw_ff(GtkButton *btn)
+{
+	gboolean state;
+
+	state = cn0540_get_gpio_state("cn0540_sw_ff_gpio");
+	radbtn_sw_ff->check_button.toggle_button.active = state;
+	gtk_text_buffer_set_text(sw_ff_buffer, state ? "HIGH" : "LOW", -1);
+}
+
+static void monitor_fda(GtkCheckButton *btn)
+{
+	cn0540_set_gpio_state("cn0540_FDA_DIS",!btn->toggle_button.active);
+	gtk_text_buffer_set_text(fda_buffer, btn->toggle_button.active ?
+				 "ENABLED" : "DISABLED", -1);
+}
+
+static void monitor_fda_mode(GtkCheckButton *btn)
+{
+	cn0540_set_gpio_state("cn0540_FDA_MODE",btn->toggle_button.active);
+	gtk_text_buffer_set_text(fda_mode_buffer, btn->toggle_button.active ?
+				 "FULL POWER" : "LOW POWER", -1);
+}
 
 static double vout_function(int32_t adc_code)
 {
@@ -248,6 +310,9 @@ static GtkWidget *cn0540_init(struct osc_plugin *plugin, GtkWidget *notebook,
 	struct iio_device *adc;
 	struct iio_device *dac;
 	struct iio_device *gpio;
+	gboolean direction;
+	char *label;
+	int idx;
 
 	builder = gtk_builder_new();
 
@@ -370,6 +435,14 @@ static GtkWidget *cn0540_init(struct osc_plugin *plugin, GtkWidget *notebook,
 	iio_update_widgets(iio_widgets, num_widgets);
 
 
+	g_signal_connect(G_OBJECT(tgbtn_shutdown), "toggled",
+			 G_CALLBACK(monitor_shutdown), NULL);
+	g_signal_connect(G_OBJECT(tgbtn_fda), "toggled",
+			 G_CALLBACK(monitor_fda), NULL);
+	g_signal_connect(G_OBJECT(tgbtn_fda_mode), "toggled",
+			 G_CALLBACK(monitor_fda_mode), NULL);
+	g_signal_connect(G_OBJECT(btn_get_sw_ff), "clicked",
+			 G_CALLBACK(monitor_sw_ff), NULL);
 	g_signal_connect(G_OBJECT(calib_btn),"clicked",
 			 G_CALLBACK(calib),NULL);
 	g_signal_connect(G_OBJECT(read_btn),"clicked",
@@ -379,6 +452,13 @@ static GtkWidget *cn0540_init(struct osc_plugin *plugin, GtkWidget *notebook,
 	g_signal_connect(G_OBJECT(readvsensor_btn),"clicked",
 			 G_CALLBACK(read_vsensor),NULL);
 
+	gtk_toggle_button_set_active(&tgbtn_shutdown->toggle_button,FALSE);
+	gtk_toggle_button_set_active(&tgbtn_fda->toggle_button,TRUE);
+	gtk_toggle_button_set_active(&tgbtn_fda_mode->toggle_button,TRUE);
+	gtk_toggle_button_toggled(&tgbtn_shutdown->toggle_button);
+	gtk_toggle_button_toggled(&tgbtn_fda->toggle_button);
+	gtk_toggle_button_toggled(&tgbtn_fda_mode->toggle_button);
+	gtk_button_clicked(btn_get_sw_ff);
 	return cn0540_panel;
 }
 

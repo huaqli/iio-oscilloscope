@@ -20,6 +20,8 @@
 #define ADC_DEVICE	"ad7768-1"
 #define DAC_DEVICE	"ltc2606"
 #define GPIO_CTRL	"one-bit-adc-dac"
+#define VOLTAGE_MONITOR_1   "xadc"
+#define VOLTAGE_MONITOR_2   "ltc2308"
 /*
  * For now leave this define as it is but, in future it would be nice if
  * the scaling is done in the driver so that, the plug in does not have
@@ -36,6 +38,8 @@
 
 #define DAC_DEFAULT_VAL         55616
 
+#define XADC_VREF               3.3
+#define XADC_RES                12
 #define NUM_GPIOS               8
 #define NUM_ANALOG_PINS         6
 
@@ -46,6 +50,7 @@ struct iio_gpio {
 static struct iio_context *ctx;
 static struct iio_channel *adc_ch;
 static struct iio_channel *dac_ch;
+static struct iio_channel *analog_in[NUM_ANALOG_PINS];
 static struct iio_gpio gpio_ch[NUM_GPIOS];
 static struct iio_widget iio_widgets[25];
 static unsigned int num_widgets;
@@ -82,6 +87,7 @@ static GtkTextBuffer *calib_buffer;
 static GtkTextBuffer *vsensor_buf;
 static GtkTextBuffer *vshift_buf;
 
+static gboolean found_voltage_mon = FALSE;
 static gboolean plugin_detached;
 static gint this_page;
 
@@ -139,6 +145,29 @@ static void monitor_fda_mode(GtkCheckButton *btn)
 	cn0540_set_gpio_state("cn0540_FDA_MODE",btn->toggle_button.active);
 	gtk_text_buffer_set_text(fda_mode_buffer, btn->toggle_button.active ?
 				 "FULL POWER" : "LOW POWER", -1);
+}
+
+static gboolean update_voltages(void)
+{
+	double scale, result;
+	char voltage[10];
+	long long raw;
+	int idx;
+
+	if (found_voltage_mon){
+		for(idx = 0; idx < NUM_ANALOG_PINS; idx++) {
+			iio_channel_attr_read_longlong(analog_in[idx], "raw",
+						       &raw);
+			iio_channel_attr_read_double(analog_in[idx], "scale",
+			 			     &scale);
+			result = raw * scale * XADC_VREF;
+			snprintf(voltage, sizeof(voltage), "%.2f", result);
+			gtk_text_buffer_set_text(voltage_buffer[idx], voltage,
+						 -1);
+		}
+	}
+
+	return TRUE;
 }
 
 static double vout_function(int32_t adc_code)
@@ -310,6 +339,7 @@ static GtkWidget *cn0540_init(struct osc_plugin *plugin, GtkWidget *notebook,
 	struct iio_device *adc;
 	struct iio_device *dac;
 	struct iio_device *gpio;
+	struct iio_device *voltage_mon;
 	gboolean direction;
 	char *label;
 	int idx;
@@ -326,11 +356,16 @@ static GtkWidget *cn0540_init(struct osc_plugin *plugin, GtkWidget *notebook,
 	adc = iio_context_find_device(ctx, ADC_DEVICE);
 	dac = iio_context_find_device(ctx, DAC_DEVICE);
 	gpio = iio_context_find_device(ctx, GPIO_CTRL);
+	voltage_mon = iio_context_find_device(ctx, VOLTAGE_MONITOR_1);
+	if (!voltage_mon)
+		voltage_mon = iio_context_find_device(ctx, VOLTAGE_MONITOR_2);
 
 	if (!adc || !dac) {
 		printf("Could not find expected iio devices\n");
 		return NULL;
 	}
+	if(voltage_mon)
+		found_voltage_mon = TRUE;
 
 	adc_ch = iio_device_find_channel(adc, "voltage0", false);
 	dac_ch = iio_device_find_channel(dac, "voltage0", true);
@@ -459,6 +494,11 @@ static GtkWidget *cn0540_init(struct osc_plugin *plugin, GtkWidget *notebook,
 	gtk_toggle_button_toggled(&tgbtn_fda->toggle_button);
 	gtk_toggle_button_toggled(&tgbtn_fda_mode->toggle_button);
 	gtk_button_clicked(btn_get_sw_ff);
+
+	if (found_voltage_mon){
+		g_timeout_add_seconds(1, (GSourceFunc)update_voltages, NULL);
+	}
+
 	return cn0540_panel;
 }
 

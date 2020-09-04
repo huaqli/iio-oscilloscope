@@ -36,21 +36,35 @@
 
 #define DAC_DEFAULT_VAL         55616
 
+#define NUM_GPIOS               8
+#define NUM_ANALOG_PINS         6
 static struct iio_context *ctx;
 static struct iio_channel *adc_ch;
 static struct iio_channel *dac_ch;
-static struct iio_channel *sw_ff;
-static struct iio_channel *sw_in;
-static struct iio_channel *fda_dis;
-static struct iio_channel *fda_mode;
 static struct iio_widget iio_widgets[25];
 static unsigned int num_widgets;
 
 static GtkWidget *cn0540_panel;
-static GtkToggleButton *swin_enable;
-static GtkToggleButton *swff_enable;
-static GtkToggleButton *fdadis_enable;
-static GtkToggleButton *fdamode_pow;
+static GtkRadioButton *radbtn_sw_ff;
+static GtkCheckButton *tgbtn_shutdown;
+static GtkCheckButton *tgbtn_fda;
+static GtkCheckButton *tgbtn_fda_mode;
+static GtkButton *btn_get_sw_ff;
+static GtkTextView *sw_ff_status;
+static GtkTextView *shutdown_status;
+static GtkTextView *fda_status;
+static GtkTextView *fda_mode_status;
+static GtkTextView *voltage_0_status;
+static GtkTextView *voltage_1_status;
+static GtkTextView *voltage_2_status;
+static GtkTextView *voltage_3_status;
+static GtkTextView *voltage_4_status;
+static GtkTextView *voltage_5_status;
+static GtkTextBuffer *sw_ff_buffer;
+static GtkTextBuffer *shutdown_buffer;
+static GtkTextBuffer *fda_buffer;
+static GtkTextBuffer *fda_mode_buffer;
+static GtkTextBuffer *voltage_buffer[NUM_ANALOG_PINS];
 static GtkWidget *calib_btn;
 static GtkWidget *write_btn;
 static GtkWidget *read_btn;
@@ -65,42 +79,6 @@ static GtkTextBuffer *vshift_buf;
 static gboolean plugin_detached;
 static gint this_page;
 
-static void enable_fdadis(GtkButton *btn)
-{
-	gboolean button_state;
-	button_state = gtk_toggle_button_get_active(fdadis_enable);
-	if(button_state)
-		iio_channel_attr_write_longlong(sw_ff, "cn0540_FDA_DIS_raw", 1);
-	else
-		iio_channel_attr_write_longlong(sw_ff, "cn0540_FDA_DIS_raw", 0);
-}
-static void set_fdamode(GtkToggleButton *btn)
-{
-	gboolean button_state;
-	button_state = gtk_toggle_button_get_active(fdamode_pow);
-	if(button_state)
-		iio_channel_attr_write_longlong(sw_ff, "cn0540_FDA_MODE_raw", 1);
-	else
-		iio_channel_attr_write_longlong(sw_ff, "cn0540_FDA_MODE_raw", 0);
-}
-static void enable_swff(GtkToggleButton *btn)
-{
-	gboolean button_state;
-	button_state = gtk_toggle_button_get_active(swff_enable);
-	if(button_state)
-		iio_channel_attr_write_longlong(sw_ff, "cn0540_sw_ff_gpio_raw", 1);
-	else
-		iio_channel_attr_write_longlong(sw_ff, "cn0540_sw_ff_gpio_raw", 0);
-}
-static void enable_swin(GtkButton *btn)
-{
-	gboolean button_state;
-	button_state = gtk_toggle_button_get_active(swin_enable);
-	if(button_state)
-		iio_channel_attr_write_longlong(sw_in, "cn0540_shutdown_gpio_raw", 1);
-	else
-		iio_channel_attr_write_longlong(sw_in, "cn0540_shutdown_gpio_raw", 0);
-}
 static double vout_function(int32_t adc_code)
 {
 	double vout = (adc_code * ADC_SCALE) / 1000.0;
@@ -291,19 +269,61 @@ static GtkWidget *cn0540_init(struct osc_plugin *plugin, GtkWidget *notebook,
 
 	adc_ch = iio_device_find_channel(adc, "voltage0", false);
 	dac_ch = iio_device_find_channel(dac, "voltage0", true);
-	sw_ff = iio_device_find_channel(gpio, "voltage2", true);
-	sw_in = iio_device_find_channel(gpio, "voltage3",true);
-	fda_dis = iio_device_find_channel(gpio, "voltage6",true);
-	fda_mode = iio_device_find_channel(gpio, "voltage7",true);
+	label = strdup("voltage0");
+	idx = -1;
+	direction = TRUE;
+	while(1) {
+		gpio_ch[++idx].gpio = iio_device_find_channel(gpio, label, direction);
+		if (gpio_ch[idx].gpio != NULL){
+			iio_channel_attr_read(gpio_ch[idx].gpio, "label", gpio_ch[idx].label, 30);
+			label[7]++;
+		} else if (direction && (gpio_ch[idx].gpio == NULL)) {
+			direction = !direction;
+			label = strdup("voltage0");
+			idx--;
+		} else
+			break;
+	}
+	if (found_voltage_mon){
+		label = strdup("voltage9");
+		for(idx = 0; idx < NUM_ANALOG_PINS; idx++) {
+			analog_in[idx] = iio_device_find_channel(voltage_mon, label, FALSE);
+			label[strlen(label) - 1]++;
+			if (label[7] == ':')
+				label = strdup("voltage10");
+		}
+	}
 
 	iio_channel_attr_write_longlong(dac_ch, "raw", DAC_DEFAULT_VAL);
 
 	cn0540_panel = GTK_WIDGET(gtk_builder_get_object(builder,
 							 "cn0540_panel"));
-	swff_enable = GTK_TOGGLE_BUTTON(gtk_builder_get_object(builder,"SWFF_enable"));
-	swin_enable = GTK_TOGGLE_BUTTON(gtk_builder_get_object(builder,"SWIN_enable"));
-	fdadis_enable = GTK_TOGGLE_BUTTON(gtk_builder_get_object(builder,"FDADIS_enable"));
-	fdamode_pow = GTK_TOGGLE_BUTTON(gtk_builder_get_object(builder,"FDAMODE_power"));
+
+	radbtn_sw_ff = GTK_RADIO_BUTTON(gtk_builder_get_object(builder,"radbtn_sw_ff"));
+	tgbtn_shutdown = GTK_CHECK_BUTTON(gtk_builder_get_object(builder,"tgbtn_shutdown"));
+	tgbtn_fda = GTK_CHECK_BUTTON(gtk_builder_get_object(builder,"tgbtn_fda"));
+	tgbtn_fda_mode = GTK_CHECK_BUTTON(gtk_builder_get_object(builder,"tgbtn_fda_mode"));
+	btn_get_sw_ff = GTK_BUTTON(gtk_builder_get_object(builder,"btn_get_sw_ff"));
+	sw_ff_status = GTK_TEXT_VIEW(gtk_builder_get_object(builder,"sw_ff_status"));
+	shutdown_status = GTK_TEXT_VIEW(gtk_builder_get_object(builder,"shutdown_status"));
+	fda_status = GTK_TEXT_VIEW(gtk_builder_get_object(builder,"fda_status"));
+	fda_mode_status = GTK_TEXT_VIEW(gtk_builder_get_object(builder,"fda_mode_status "));
+	voltage_0_status = GTK_TEXT_VIEW(gtk_builder_get_object(builder,"voltage_0_status"));
+	voltage_1_status = GTK_TEXT_VIEW(gtk_builder_get_object(builder,"voltage_1_status"));
+	voltage_2_status = GTK_TEXT_VIEW(gtk_builder_get_object(builder,"voltage_2_status"));
+	voltage_3_status = GTK_TEXT_VIEW(gtk_builder_get_object(builder,"voltage_3_status"));
+	voltage_4_status = GTK_TEXT_VIEW(gtk_builder_get_object(builder,"voltage_4_status"));
+	voltage_5_status = GTK_TEXT_VIEW(gtk_builder_get_object(builder,"voltage_5_status"));
+	sw_ff_buffer = GTK_TEXT_BUFFER(gtk_builder_get_object(builder,"sw_ff_buffer"));
+	shutdown_buffer = GTK_TEXT_BUFFER(gtk_builder_get_object(builder,"shutdown_buffer"));
+	fda_buffer = GTK_TEXT_BUFFER(gtk_builder_get_object(builder,"fda_buffer"));
+	fda_mode_buffer = GTK_TEXT_BUFFER(gtk_builder_get_object(builder,"fda_mode_buffer"));
+	voltage_buffer[0] = GTK_TEXT_BUFFER(gtk_builder_get_object(builder,"voltage_0_buffer"));
+	voltage_buffer[1] = GTK_TEXT_BUFFER(gtk_builder_get_object(builder,"voltage_1_buffer"));
+	voltage_buffer[2] = GTK_TEXT_BUFFER(gtk_builder_get_object(builder,"voltage_2_buffer"));
+	voltage_buffer[3] = GTK_TEXT_BUFFER(gtk_builder_get_object(builder,"voltage_3_buffer"));
+	voltage_buffer[4] = GTK_TEXT_BUFFER(gtk_builder_get_object(builder,"voltage_4_buffer"));
+	voltage_buffer[5] = GTK_TEXT_BUFFER(gtk_builder_get_object(builder,"voltage_5_buffer"));
 	calib_btn = GTK_WIDGET(gtk_builder_get_object(builder,"calib_btn"));
 	read_btn = GTK_WIDGET(gtk_builder_get_object(builder,"read_btn"));
 	write_btn = GTK_WIDGET(gtk_builder_get_object(builder,"write_btn"));
@@ -317,20 +337,19 @@ static GtkWidget *cn0540_init(struct osc_plugin *plugin, GtkWidget *notebook,
 
 
 	iio_toggle_button_init_from_builder(&iio_widgets[num_widgets++],
-			adc, NULL, "en", builder,
-			"SWFF_enable", 0);
+			adc, NULL, "en", builder, "radbtn_sw_ff", 0);
 
 	iio_toggle_button_init_from_builder(&iio_widgets[num_widgets++],
-			adc, NULL, "en", builder,
-			"SWIN_enable", 0);
+			adc, NULL, "en", builder, "tgbtn_shutdown", 0);
 
 	iio_toggle_button_init_from_builder(&iio_widgets[num_widgets++],
-			adc, NULL, NULL, builder,
-			"FDADIS_enable", 0);
+			adc, NULL, "en", builder, "tgbtn_fda", 0);
 
 	iio_toggle_button_init_from_builder(&iio_widgets[num_widgets++],
-			adc, NULL, NULL, builder,
-			"FDAMODE_power", 0);
+			adc, NULL, "en", builder, "tgbtn_fda_mode", 0);
+
+	iio_button_init_from_builder(&iio_widgets[num_widgets++],
+			adc,NULL,NULL,builder,"btn_get_sw_ff");
 
 	iio_button_init_from_builder(&iio_widgets[num_widgets++],
 			adc,NULL,NULL,builder,"calib_btn");
@@ -351,15 +370,6 @@ static GtkWidget *cn0540_init(struct osc_plugin *plugin, GtkWidget *notebook,
 	iio_update_widgets(iio_widgets, num_widgets);
 
 
-	g_signal_connect(G_OBJECT(swff_enable), "toggled",
-			 G_CALLBACK(enable_swff), NULL);
-	g_signal_connect(G_OBJECT(swin_enable), "toggled",
-			 G_CALLBACK(enable_swin), NULL);
-
-	g_signal_connect(G_OBJECT(fdadis_enable), "toggled",
-			 G_CALLBACK(enable_fdadis), NULL);
-	g_signal_connect(G_OBJECT(fdamode_pow), "toggled",
-			 G_CALLBACK(set_fdamode), NULL);
 	g_signal_connect(G_OBJECT(calib_btn),"clicked",
 			 G_CALLBACK(calib),NULL);
 	g_signal_connect(G_OBJECT(read_btn),"clicked",
